@@ -1,0 +1,163 @@
+name: 'S3 Upload Artifact'
+description: 'Drop-in replacement for actions/upload-artifact@v7 using S3-compatible object storage'
+
+inputs:
+  name:
+    description: 'Artifact name (used as the final S3 path segment)'
+    required: false
+    default: 'artifact'
+  path:
+    description: 'File or directory to upload'
+    required: true
+  if-no-files-found:
+    description: 'Behavior when no files are found: warn, error, or ignore'
+    required: false
+    default: 'warn'
+  overwrite:
+    description: 'If false, fail when the artifact already exists in S3'
+    required: false
+    default: 'false'
+  include-hidden-files:
+    description: 'Include files starting with a dot'
+    required: false
+    default: 'false'
+  archive:
+    description: 'If true, tar + gzip the path before uploading; if false, sync files directly'
+    required: false
+    default: 'true'
+  bucket:
+    description: 'S3 bucket name'
+    required: true
+  endpoint-url:
+    description: 'S3 endpoint URL (omit for AWS S3; set for Scaleway, MinIO, R2, etc.)'
+    required: false
+    default: ''
+
+outputs:
+  artifact-url:
+    description: 'Full S3 URL of the uploaded artifact'
+    value: ${{ steps.upload.outputs.artifact-url }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Upload artifact to S3
+      id: upload
+      shell: bash
+      env:
+        INPUT_NAME: ${{ inputs.name }}
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_IF_NO_FILES_FOUND: ${{ inputs.if-no-files-found }}
+        INPUT_OVERWRITE: ${{ inputs.overwrite }}
+        INPUT_INCLUDE_HIDDEN_FILES: ${{ inputs.include-hidden-files }}
+        INPUT_ARCHIVE: ${{ inputs.archive }}
+        INPUT_BUCKET: ${{ inputs.bucket }}
+        INPUT_ENDPOINT_URL: ${{ inputs.endpoint-url }}
+      run: |
+        set -e
+
+        # Build optional endpoint arg
+        ENDPOINT_ARG=""
+        if [ -n "$INPUT_ENDPOINT_URL" ]; then
+          ENDPOINT_ARG="--endpoint-url $INPUT_ENDPOINT_URL"
+        fi
+
+        # Resolve the S3 prefix for this artifact
+        S3_PREFIX="${{ github.repository }}/${{ github.run_id }}/${{ github.run_attempt }}/${INPUT_NAME}"
+        S3_URI="s3://${INPUT_BUCKET}/${S3_PREFIX}"
+
+        # --- Check if files exist ---
+        if [ -e "$INPUT_PATH" ]; then
+          FILE_COUNT=$(find "$INPUT_PATH" -maxdepth 10 -type f | wc -l | tr -d ' ')
+        else
+          FILE_COUNT=0
+        fi
+
+        if [ "$FILE_COUNT" -eq 0 ]; then
+          case "$INPUT_IF_NO_FILES_FOUND" in
+            error)
+              echo "::error::No files found at path '${INPUT_PATH}'"
+              exit 1
+              ;;
+            warn)
+              echo "::warning::No files found at path '${INPUT_PATH}'. Skipping upload."
+              exit 0
+              ;;
+            ignore)
+              echo "::notice::No files found at path '${INPUT_PATH}'. Skipping upload (ignore mode)."
+              exit 0
+              ;;
+            *)
+              echo "::error::Invalid value for if-no-files-found: '${INPUT_IF_NO_FILES_FOUND}'. Must be warn, error, or ignore."
+              exit 1
+              ;;
+          esac
+        fi
+
+        # --- Overwrite check ---
+        if [ "$INPUT_OVERWRITE" = "false" ]; then
+          EXISTING=$(aws s3 ls "${S3_URI}/" $ENDPOINT_ARG 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            echo "::error::Artifact '${INPUT_NAME}' already exists at ${S3_URI}/ and overwrite is false."
+            exit 1
+          fi
+        fi
+
+        # --- Upload ---
+        if [ "$INPUT_ARCHIVE" = "true" ]; then
+          ARCHIVE_FILE="$RUNNER_TEMP/${INPUT_NAME}.tar.gz"
+
+          TAR_ARGS="-czf"
+          EXCLUDE_ARGS=""
+          if [ "$INPUT_INCLUDE_HIDDEN_FILES" = "false" ]; then
+            # Exclude dotfiles/dot-directories via find + tar --files-from
+            FILES_LIST="$RUNNER_TEMP/${INPUT_NAME}_files.txt"
+            if [ -d "$INPUT_PATH" ]; then
+              find "$INPUT_PATH" -not -path '*/.*' -type f > "$FILES_LIST"
+            else
+              echo "$INPUT_PATH" > "$FILES_LIST"
+            fi
+
+            if [ ! -s "$FILES_LIST" ]; then
+              case "$INPUT_IF_NO_FILES_FOUND" in
+                error)
+                  echo "::error::No non-hidden files found at path '${INPUT_PATH}'"
+                  exit 1
+                  ;;
+                warn)
+                  echo "::warning::No non-hidden files found at path '${INPUT_PATH}'. Skipping upload."
+                  exit 0
+                  ;;
+                ignore)
+                  exit 0
+                  ;;
+              esac
+            fi
+
+            tar -czf "$ARCHIVE_FILE" -T "$FILES_LIST"
+          else
+            tar -czf "$ARCHIVE_FILE" "$INPUT_PATH"
+          fi
+
+          echo "::notice::Uploading archive to ${S3_URI}/${INPUT_NAME}.tar.gz"
+          aws s3 cp "$ARCHIVE_FILE" "${S3_URI}/${INPUT_NAME}.tar.gz" $ENDPOINT_ARG
+          ARTIFACT_URL="${S3_URI}/${INPUT_NAME}.tar.gz"
+          rm -f "$ARCHIVE_FILE"
+        else
+          # Direct sync (no archive)
+          SYNC_ARGS="--no-progress"
+          if [ "$INPUT_INCLUDE_HIDDEN_FILES" = "false" ]; then
+            SYNC_ARGS="$SYNC_ARGS --exclude '.*' --exclude '.*/**'"
+          fi
+
+          echo "::notice::Syncing files to ${S3_URI}/"
+          if [ -d "$INPUT_PATH" ]; then
+            eval aws s3 sync "\"$INPUT_PATH\"" "\"${S3_URI}/\"" $ENDPOINT_ARG $SYNC_ARGS
+          else
+            aws s3 cp "$INPUT_PATH" "${S3_URI}/" $ENDPOINT_ARG --no-progress
+          fi
+          ARTIFACT_URL="${S3_URI}/"
+        fi
+
+        echo "artifact-url=${ARTIFACT_URL}" >> "$GITHUB_OUTPUT"
+        echo "::notice::Artifact '${INPUT_NAME}' uploaded to ${ARTIFACT_URL}"
