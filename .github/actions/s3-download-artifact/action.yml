@@ -17,6 +17,18 @@ inputs:
     description: 'S3 endpoint URL (omit for AWS S3; set for Scaleway, MinIO, R2, etc.)'
     required: false
     default: ''
+  aws-access-key-id:
+    description: 'AWS access key ID'
+    required: false
+    default: ''
+  aws-secret-access-key:
+    description: 'AWS secret access key'
+    required: false
+    default: ''
+  aws-region:
+    description: 'AWS region (or S3-compatible region)'
+    required: false
+    default: ''
   run-id:
     description: 'Run ID to download artifacts from. Defaults to the current run.'
     required: false
@@ -40,6 +52,9 @@ runs:
         INPUT_PATH: ${{ inputs.path }}
         INPUT_BUCKET: ${{ inputs.bucket }}
         INPUT_ENDPOINT_URL: ${{ inputs.endpoint-url }}
+        AWS_ACCESS_KEY_ID: ${{ inputs.aws-access-key-id }}
+        AWS_SECRET_ACCESS_KEY: ${{ inputs.aws-secret-access-key }}
+        AWS_DEFAULT_REGION: ${{ inputs.aws-region }}
         INPUT_RUN_ID: ${{ inputs.run-id }}
         INPUT_RUN_ATTEMPT: ${{ inputs.run-attempt }}
         INPUT_REPOSITORY: ${{ inputs.repository }}
