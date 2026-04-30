@@ -13,10 +13,6 @@ inputs:
     description: 'Behavior when no files are found: warn, error, or ignore'
     required: false
     default: 'warn'
-  overwrite:
-    description: 'If false, fail when the artifact already exists in S3'
-    required: false
-    default: 'false'
   include-hidden-files:
     description: 'Include files starting with a dot'
     required: false
@@ -60,7 +56,6 @@ runs:
         INPUT_NAME: ${{ inputs.name }}
         INPUT_PATH: ${{ inputs.path }}
         INPUT_IF_NO_FILES_FOUND: ${{ inputs.if-no-files-found }}
-        INPUT_OVERWRITE: ${{ inputs.overwrite }}
         INPUT_INCLUDE_HIDDEN_FILES: ${{ inputs.include-hidden-files }}
         INPUT_ARCHIVE: ${{ inputs.archive }}
         INPUT_BUCKET: ${{ inputs.bucket }}
@@ -71,17 +66,14 @@ runs:
       run: |
         set -e
 
-        # Build optional endpoint arg
         ENDPOINT_ARG=""
         if [ -n "$INPUT_ENDPOINT_URL" ]; then
           ENDPOINT_ARG="--endpoint-url $INPUT_ENDPOINT_URL"
         fi
 
-        # Resolve the S3 prefix for this artifact
-        S3_PREFIX="${{ github.repository }}/${{ github.run_id }}/${{ github.run_attempt }}/${INPUT_NAME}"
+        S3_PREFIX="${{ github.repository }}/${{ github.run_id }}/${INPUT_NAME}"
         S3_URI="s3://${INPUT_BUCKET}/${S3_PREFIX}"
 
-        # --- Check if files exist ---
         if [ -e "$INPUT_PATH" ]; then
           FILE_COUNT=$(find "$INPUT_PATH" -maxdepth 10 -type f | wc -l | tr -d ' ')
         else
@@ -109,23 +101,10 @@ runs:
           esac
         fi
 
-        # --- Overwrite check ---
-        if [ "$INPUT_OVERWRITE" = "false" ]; then
-          EXISTING=$(aws s3 ls "${S3_URI}/" $ENDPOINT_ARG 2>/dev/null || true)
-          if [ -n "$EXISTING" ]; then
-            echo "::error::Artifact '${INPUT_NAME}' already exists at ${S3_URI}/ and overwrite is false."
-            exit 1
-          fi
-        fi
-
-        # --- Upload ---
         if [ "$INPUT_ARCHIVE" = "true" ]; then
           ARCHIVE_FILE="$RUNNER_TEMP/${INPUT_NAME}.tar.gz"
 
-          TAR_ARGS="-czf"
-          EXCLUDE_ARGS=""
           if [ "$INPUT_INCLUDE_HIDDEN_FILES" = "false" ]; then
-            # Exclude dotfiles/dot-directories via find + tar --files-from
             FILES_LIST="$RUNNER_TEMP/${INPUT_NAME}_files.txt"
             if [ -d "$INPUT_PATH" ]; then
               find "$INPUT_PATH" -not -path '*/.*' -type f > "$FILES_LIST"
@@ -159,7 +138,6 @@ runs:
           ARTIFACT_URL="${S3_URI}/${INPUT_NAME}.tar.gz"
           rm -f "$ARCHIVE_FILE"
         else
-          # Direct sync (no archive)
           SYNC_ARGS="--no-progress"
           if [ "$INPUT_INCLUDE_HIDDEN_FILES" = "false" ]; then
             SYNC_ARGS="$SYNC_ARGS --exclude '.*' --exclude '.*/**'"

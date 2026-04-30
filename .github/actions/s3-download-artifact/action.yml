@@ -33,10 +33,6 @@ inputs:
     description: 'Run ID to download artifacts from. Defaults to the current run.'
     required: false
     default: ${{ github.run_id }}
-  run-attempt:
-    description: 'Run attempt to download artifacts from. Defaults to the current attempt.'
-    required: false
-    default: ${{ github.run_attempt }}
   repository:
     description: 'Repository (owner/repo) to download artifacts from. Defaults to the current repo.'
     required: false
@@ -56,30 +52,25 @@ runs:
         AWS_SECRET_ACCESS_KEY: ${{ inputs.aws-secret-access-key }}
         AWS_DEFAULT_REGION: ${{ inputs.aws-region }}
         INPUT_RUN_ID: ${{ inputs.run-id }}
-        INPUT_RUN_ATTEMPT: ${{ inputs.run-attempt }}
         INPUT_REPOSITORY: ${{ inputs.repository }}
       run: |
         set -e
 
-        # Build optional endpoint arg
         ENDPOINT_ARG=""
         if [ -n "$INPUT_ENDPOINT_URL" ]; then
           ENDPOINT_ARG="--endpoint-url $INPUT_ENDPOINT_URL"
         fi
 
-        # Base S3 prefix for this run
-        RUN_PREFIX="${INPUT_REPOSITORY}/${INPUT_RUN_ID}/${INPUT_RUN_ATTEMPT}"
+        RUN_PREFIX="${INPUT_REPOSITORY}/${INPUT_RUN_ID}"
 
         mkdir -p "$INPUT_PATH"
 
         if [ -n "$INPUT_NAME" ]; then
-          # --- Download a specific named artifact ---
           S3_URI="s3://${INPUT_BUCKET}/${RUN_PREFIX}/${INPUT_NAME}"
 
           echo "::notice::Checking for artifact '${INPUT_NAME}' at ${S3_URI}/"
           EXISTS=$(aws s3 ls "${S3_URI}/" $ENDPOINT_ARG 2>/dev/null || true)
           if [ -z "$EXISTS" ]; then
-            # Maybe it was uploaded as a tar.gz archive
             ARCHIVE_CHECK=$(aws s3 ls "${S3_URI}/${INPUT_NAME}.tar.gz" $ENDPOINT_ARG 2>/dev/null || true)
             if [ -n "$ARCHIVE_CHECK" ]; then
               ARCHIVE_FILE="$RUNNER_TEMP/${INPUT_NAME}.tar.gz"
@@ -93,7 +84,6 @@ runs:
               exit 1
             fi
           else
-            # Check if there is a .tar.gz inside the prefix (archive mode upload)
             ARCHIVE_KEY=$(aws s3 ls "${S3_URI}/" $ENDPOINT_ARG 2>/dev/null | awk '{print $4}' | grep '\.tar\.gz$' | head -1 || true)
             if [ -n "$ARCHIVE_KEY" ]; then
               ARCHIVE_FILE="$RUNNER_TEMP/${ARCHIVE_KEY}"
@@ -103,7 +93,6 @@ runs:
               tar -xzf "$ARCHIVE_FILE" -C "$INPUT_PATH"
               rm -f "$ARCHIVE_FILE"
             else
-              # Direct sync (non-archived upload)
               DEST="${INPUT_PATH}/${INPUT_NAME}"
               mkdir -p "$DEST"
               echo "::notice::Syncing ${S3_URI}/ to ${DEST}/"
@@ -113,9 +102,7 @@ runs:
 
           echo "::notice::Artifact '${INPUT_NAME}' downloaded to ${INPUT_PATH}/"
         else
-          # --- Download ALL artifacts for this run ---
-          S3_PREFIX="${INPUT_REPOSITORY}/${INPUT_RUN_ID}/${INPUT_RUN_ATTEMPT}"
-          S3_BASE="s3://${INPUT_BUCKET}/${S3_PREFIX}"
+          S3_BASE="s3://${INPUT_BUCKET}/${RUN_PREFIX}"
 
           echo "::notice::Listing artifacts at ${S3_BASE}/"
           ARTIFACT_NAMES=$(aws s3 ls "${S3_BASE}/" $ENDPOINT_ARG 2>/dev/null | awk '/\/$/ {print $2}' | tr -d '/' || true)
